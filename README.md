@@ -172,6 +172,7 @@ usls = { version = "latest-version", features = [ "cuda" ] }
 | [Swin2SR](https://github.com/mv-lab/swin2sr) | Image Super-Resolution and Restoration | `swin2sr` | [demo](examples/swin2sr) |
 | [APISR](https://github.com/Kiteretsu77/APISR) | Real-World Anime Super-Resolution | `apisr` | [demo](examples/apisr) |
 | [RAM & RAM++](https://github.com/xinyu1205/recognize-anything) | Image Tagging | `ram` | [demo](examples/ram) |
+| [Chatterbox](https://github.com/resemble-ai/chatterbox) | Text-to-Speech | `chatterbox` | [demo](examples/chatterbox.rs) |
 
 </details>
 

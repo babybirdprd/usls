@@ -53,6 +53,7 @@ zune-jpeg = "=0.5.5"
 [dev-dependencies]
 argh = { version = "0.1.13" }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "chrono", "fmt", "ansi"] }
+hound = "3.5"
 
 
 [profile.dev]
@@ -150,6 +151,7 @@ yolo = ["slsl"]
 yoloe = ["yolo", "tokenizers"]
 yolop = []
 ram = []
+chatterbox = ["tokenizers"]
 
 # Enable all models
 all-models = [
@@ -188,6 +190,7 @@ all-models = [
     "yolop",
     "mot",
     "ram",
+    "chatterbox",
 ]
 
 
@@ -394,3 +397,7 @@ required-features = ["yolop"]
 [[example]]
 name = "ram"
 required-features = ["ram"]
+
+[[example]]
+name = "chatterbox"
+required-features = ["chatterbox"]

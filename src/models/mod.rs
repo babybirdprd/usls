@@ -154,8 +154,14 @@ mod deimv2;
 #[cfg(feature = "ram")]
 mod ram;
 
+#[cfg(feature = "chatterbox")]
+mod chatterbox;
+
 #[cfg(feature = "ram")]
 pub use ram::*;
+
+#[cfg(feature = "chatterbox")]
+pub use chatterbox::*;
 
 #[cfg(feature = "yolo")]
 pub use yolo::*;
