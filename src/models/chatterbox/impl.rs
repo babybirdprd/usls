@@ -9,8 +9,6 @@ const SAMPLE_RATE: u32 = 24000;
 const START_SPEECH_TOKEN: i64 = 6561;
 const STOP_SPEECH_TOKEN: i64 = 6562;
 const SILENCE_TOKEN: i64 = 4299;
-const NUM_KV_HEADS: usize = 16;
-const HEAD_DIM: usize = 64;
 
 /// Chatterbox model variants.
 #[derive(Debug, Copy, Clone)]
@@ -37,6 +35,10 @@ pub struct Chatterbox {
     pub processor: Processor,
     /// Kind of model.
     pub kind: ChatterboxKind,
+    /// Number of KV heads.
+    pub num_kv_heads: usize,
+    /// Head dimension.
+    pub head_dim: usize,
 }
 
 impl Chatterbox {
@@ -53,6 +55,10 @@ impl Chatterbox {
             _ => ChatterboxKind::Base,
         };
 
+        // Use reused fields or defaults
+        let num_kv_heads = config.num_classes.unwrap_or(16);
+        let head_dim = config.num_keypoints.unwrap_or(64);
+
         Ok(Self {
             speech_encoder,
             embed_tokens,
@@ -60,6 +66,8 @@ impl Chatterbox {
             conditional_decoder,
             processor,
             kind,
+            num_kv_heads,
+            head_dim,
         })
     }
 
@@ -131,7 +139,7 @@ impl Chatterbox {
         let mut past_key_values: HashMap<String, ArrayD<f32>> = HashMap::new();
         for name in &kv_names {
             // Shape: [batch, NUM_KV_HEADS, 0, HEAD_DIM]
-            let shape = vec![batch_size, NUM_KV_HEADS, 0, HEAD_DIM];
+            let shape = vec![batch_size, self.num_kv_heads, 0, self.head_dim];
             past_key_values.insert(name.clone(), Array::zeros(shape).into_dyn());
         }
 
@@ -165,8 +173,7 @@ impl Chatterbox {
 
             let lm_outputs = self.language_model.run(Xs::from(lm_inputs))?;
 
-            // Get output names - assuming they are stable and we don't need to borrow self mutably here
-            // but run takes &mut self, so now we are fine.
+            // Get output names
             let onames = self.language_model.onames().ok_or(anyhow!("Model outputs not available"))?;
             let logits = &lm_outputs[0];
 
