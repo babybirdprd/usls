@@ -69,6 +69,7 @@ pub struct Config {
     pub sam_low_res_mask: Option<bool>,
     pub max_tokens: Option<usize>,
     pub token_level_class: bool,
+    pub sequential: bool,
 }
 
 impl Default for Config {
@@ -124,6 +125,7 @@ impl Default for Config {
             task: None,
             scale: None,
             name: Default::default(),
+            sequential: false,
         }
     }
 }
@@ -159,14 +161,16 @@ impl Config {
             self.model.file = y;
         }
 
-        fn try_commit(name: &str, mut m: ORTConfig) -> anyhow::Result<ORTConfig> {
+        let sequential = self.sequential;
+        let try_commit = |name: &str, mut m: ORTConfig| -> anyhow::Result<ORTConfig> {
+            m.sequential = sequential;
             if !m.file.is_empty() {
                 m = m.try_commit(name)?;
                 return Ok(m);
             }
 
             Ok(m)
-        }
+        };
 
         self.model = try_commit(self.name, self.model)?;
         self.visual = try_commit(self.name, self.visual)?;

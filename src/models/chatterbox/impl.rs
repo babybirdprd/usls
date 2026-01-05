@@ -38,6 +38,8 @@ pub struct Chatterbox {
     pub num_kv_heads: usize,
     /// Head dimension.
     pub head_dim: usize,
+    /// Whether to run in sequential mode.
+    pub sequential: bool,
 }
 
 impl Chatterbox {
@@ -67,6 +69,7 @@ impl Chatterbox {
             kind,
             num_kv_heads,
             head_dim,
+            sequential: config.sequential,
         })
     }
 
@@ -99,9 +102,17 @@ impl Chatterbox {
         let input_ids = Array::from_shape_vec((1, input_ids_vec.len()), input_ids_vec)?.into_dyn();
 
         // 3. Run Speech Encoder
+        if self.sequential {
+            self.speech_encoder.load()?;
+        }
         let encoder_outputs = self
             .speech_encoder
             .run(Xs::from(vec![X::from(audio_values)]))?;
+
+        if self.sequential {
+            self.speech_encoder.unload()?;
+            self.embed_tokens.load()?;
+        }
 
         let cond_emb = encoder_outputs["audio_features"].0.clone();
         let prompt_token = encoder_outputs["audio_tokens"].0.clone();
@@ -127,6 +138,11 @@ impl Chatterbox {
         // Concatenate cond_emb and text_embeds
         let mut current_inputs_embeds =
             ndarray::concatenate(Axis(1), &[cond_emb.view(), text_embeds.view()])?.into_dyn();
+
+        if self.sequential {
+            // we keep embed_tokens loaded because it's used inside the loop
+            self.language_model.load()?;
+        }
 
         // 5. Generation Loop
         let batch_size = 1;
@@ -243,6 +259,11 @@ impl Chatterbox {
             current_inputs_embeds = embed_out_next["inputs_embeds"].0.clone();
         }
 
+        if self.sequential {
+            self.embed_tokens.unload()?;
+            self.language_model.unload()?;
+        }
+
         // 6. Decode Audio
         let len = generate_tokens.len();
         let speech_tokens = if len > 1 { &generate_tokens[1..] } else { &[] };
@@ -293,7 +314,16 @@ impl Chatterbox {
             }
         }
 
+        if self.sequential {
+            self.conditional_decoder.load()?;
+        }
+
         let wav_output = self.conditional_decoder.run(Xs::from(ordered_inputs))?;
+
+        if self.sequential {
+            self.conditional_decoder.unload()?;
+        }
+
         let wav = &wav_output["waveform"]; // The probe said the output name is "waveform"
         Ok(wav.iter().cloned().collect())
     }

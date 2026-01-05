@@ -19,6 +19,7 @@ pub struct ORTConfig {
     pub num_inter_threads: Option<usize>,
     // hardware configurations
     pub hardware: HardwareConfig,
+    pub sequential: bool,
 }
 
 impl Default for ORTConfig {
@@ -35,6 +36,7 @@ impl Default for ORTConfig {
             num_intra_threads: None,
             num_inter_threads: None,
             hardware: HardwareConfig::new(),
+            sequential: false,
         }
     }
 }
@@ -261,6 +263,10 @@ macro_rules! impl_ort_config_methods {
                 }
                 pub fn [<with_ $field _num_dry_run>](mut self, x: usize) -> Self {
                     self.$field = self.$field.with_num_dry_run(x);
+                    self
+                }
+                pub fn [<with_ $field _sequential>](mut self, x: bool) -> Self {
+                    self.$field = self.$field.with_sequential(x);
                     self
                 }
                 pub fn [<with_ $field _ixx>](mut self, i: usize, ii: usize, x: $crate::MinOptMax) -> Self {

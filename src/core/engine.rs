@@ -68,7 +68,7 @@ pub struct OnnxIo {
     /// Output tensor attributes.
     pub outputs: OrtTensorAttr,
     /// ONNX Runtime session.
-    pub session: Session,
+    pub session: Option<Session>,
     /// ONNX model protocol buffer.
     pub proto: onnx::ModelProto,
 }
@@ -94,6 +94,7 @@ pub struct Engine {
     pub onnx: Option<OnnxIo>,
     /// Number of dry runs for warmup.
     pub num_dry_run: usize,
+    pub sequential: bool,
 
     // global
     pub graph_opt_level: Option<u8>,
@@ -112,6 +113,7 @@ impl Default for Engine {
             spec: Default::default(),
             iiixs: Default::default(),
             num_dry_run: 3,
+            sequential: false,
             params: None,
             wbmems: None,
             inputs_minoptmax: vec![],
@@ -182,6 +184,7 @@ impl Engine {
             num_inter_threads: config.num_inter_threads,
             // hardware configurations
             hardware,
+            sequential: config.sequential,
             ..Default::default()
         }
         .build()
@@ -248,22 +251,51 @@ impl Engine {
             let outputs = Self::io_from_onnx_value_info(&initializer_names, &graph.output)?;
             self.inputs_minoptmax = Self::build_ort_inputs(&inputs, self.iiixs())?;
 
-            // session
-            ort::init().commit()?;
-            let session = self.build_session(&inputs)?;
-
             // onnxio
             self.onnx = Some(OnnxIo {
                 inputs,
                 outputs,
                 proto,
-                session,
+                session: None,
             });
         });
-        self.dry_run()?;
+
+        // if not in sequential mode, we can load it immediately
+        if !self.sequential {
+            self.load()?;
+            self.dry_run()?;
+        }
         self.info();
 
         Ok(self)
+    }
+
+    pub fn load(&mut self) -> Result<()> {
+        if let Some(onnx) = &self.onnx {
+            if onnx.session.is_some() {
+                return Ok(());
+            }
+        }
+
+        let inputs = if let Some(onnx) = &self.onnx {
+            onnx.inputs.clone()
+        } else {
+            return Ok(());
+        };
+
+        ort::init().commit()?;
+        let session = self.build_session(&inputs)?;
+        if let Some(onnx) = &mut self.onnx {
+            onnx.session = Some(session);
+        }
+        Ok(())
+    }
+
+    pub fn unload(&mut self) -> Result<()> {
+        if let Some(onnx) = &mut self.onnx {
+            onnx.session = None;
+        }
+        Ok(())
     }
 
     pub fn dry_run(&mut self) -> Result<()> {
@@ -336,9 +368,13 @@ impl Engine {
             });
 
             // run
+            let session = onnx
+                .session
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("Session not loaded"))?;
             let outputs = elapsed_global!(
                 &format!("[{}] ort_inference", self.spec),
-                onnx.session.run(&xs_[..])?
+                session.run(&xs_[..])?
             );
 
             // extract
@@ -1154,7 +1190,8 @@ impl Engine {
 
     pub fn try_fetch(&self, key: &str) -> Option<String> {
         let onnx = self.onnx.as_ref()?;
-        match onnx.session.metadata() {
+        let session = onnx.session.as_ref()?;
+        match session.metadata() {
             Err(_) => None,
             Ok(metadata) => metadata.custom(key).ok().flatten(),
         }

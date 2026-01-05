@@ -32,6 +32,7 @@ pub struct SAM3 {
     text_cache: LruCache<String, (X, X)>,
     names: Vec<String>,
     spec: String,
+    sequential: bool,
 }
 
 impl SAM3 {
@@ -74,12 +75,20 @@ impl SAM3 {
             text_cache: LruCache::new(NonZeroUsize::new(100).unwrap()),
             names: vec![],
             spec,
+            sequential: config.sequential,
         })
     }
 
     fn encode_images(&mut self, xs: &[Image]) -> Result<Xs> {
+        if self.sequential {
+            self.visual_encoder.load()?;
+        }
         let xs_ = self.processor.process_images(xs)?;
-        self.visual_encoder.run(Xs::from(xs_))
+        let res = self.visual_encoder.run(Xs::from(xs_))?;
+        if self.sequential {
+            self.visual_encoder.unload()?;
+        }
+        Ok(res)
     }
 
     fn encode_texts(&mut self, texts: &[&str]) -> Result<Vec<(X, X)>> {
@@ -93,6 +102,10 @@ impl SAM3 {
             .ok_or_else(|| anyhow::anyhow!("Text encoder not available for this task"))?;
 
         let mut all_results = Vec::with_capacity(texts.len());
+
+        if self.sequential {
+            textual_encoder.load()?;
+        }
 
         for chunk in texts.chunks(self.text_batch) {
             let n = chunk.len();
@@ -127,6 +140,10 @@ impl SAM3 {
             }
         }
 
+        if self.sequential {
+            textual_encoder.unload()?;
+        }
+
         Ok(all_results)
     }
 
@@ -150,6 +167,12 @@ impl SAM3 {
 
         // Process in chunks based on geo_batch
         let mut all_results = Vec::with_capacity(total);
+
+        if self.sequential {
+            if let Some(ge) = self.geometry_encoder.as_mut() {
+                ge.load()?;
+            }
+        }
 
         for (chunk_start, chunk) in prompts_boxes
             .chunks(self.geo_batch)
@@ -224,6 +247,12 @@ impl SAM3 {
             }
         }
 
+        if self.sequential {
+            if let Some(ge) = self.geometry_encoder.as_mut() {
+                ge.unload()?;
+            }
+        }
+
         Ok(all_results)
     }
 
@@ -249,6 +278,10 @@ impl SAM3 {
             fpn_features[3].shape(),
         );
 
+        if self.sequential {
+            self.decoder.load()?;
+        }
+
         let ys = self.decoder.run(Xs::from(vec![
             fpn_features[0]
                 .clone()
@@ -267,7 +300,7 @@ impl SAM3 {
         ]))?;
 
         // Split batch results
-        Ok((0..n)
+        let res = (0..n)
             .map(|i| {
                 vec![
                     ys[0]
@@ -285,7 +318,13 @@ impl SAM3 {
                 ]
                 .into()
             })
-            .collect())
+            .collect::<Vec<Xs>>();
+
+        if self.sequential {
+            self.decoder.unload()?;
+        }
+
+        Ok(res)
     }
 
     /// Main forward method - dispatches to task-specific implementation
@@ -650,14 +689,21 @@ impl SAM3 {
 
         // Run decoder
         let decoder_outputs = elapsed_module!("SAM3-Tracker", "decoder", {
-            self.decoder.run(Xs::from(vec![
+            if self.sequential {
+                self.decoder.load()?;
+            }
+            let res = self.decoder.run(Xs::from(vec![
                 input_points,
                 input_labels,
                 input_boxes,
                 emb0.clone(),
                 emb1.clone(),
                 emb2.clone(),
-            ]))?
+            ]))?;
+            if self.sequential {
+                self.decoder.unload()?;
+            }
+            res
         });
 
         // Parse outputs: iou_scores[1,1,3], pred_masks[1,1,3,H,W], obj_scores[1,1,1]
