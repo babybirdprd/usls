@@ -6,28 +6,29 @@ impl Config {
             name: "chatterbox-turbo",
             // Speech Encoder
             encoder: ORTConfig {
-                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/speech_encoder.onnx".to_string(),
+                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/speech_encoder_fp16.onnx".to_string(),
                 external_data_file: true,
                 num_dry_run: 0,
                 ..Default::default()
             },
             // Embed Tokens
             textual_encoder: ORTConfig {
-                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/embed_tokens.onnx".to_string(),
+                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/embed_tokens_fp16.onnx".to_string(),
                 external_data_file: true,
                 num_dry_run: 0,
                 ..Default::default()
             },
             // Language Model
             textual_decoder: ORTConfig {
-                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/language_model.onnx".to_string(),
+                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/language_model_fp16.onnx".to_string(),
                 external_data_file: true,
                 num_dry_run: 0,
                 ..Default::default()
             },
             // Conditional Decoder
             decoder: ORTConfig {
-                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/conditional_decoder.onnx".to_string(),
+                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/conditional_decoder_fp16.onnx"
+                    .to_string(),
                 external_data_file: true,
                 num_dry_run: 0,
                 ..Default::default()

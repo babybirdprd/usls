@@ -95,7 +95,7 @@ impl Chatterbox {
             Array::from_shape_vec((1, audio_prompt.len()), audio_prompt.to_vec())?.into_dyn();
 
         // 2. Tokenize Text
-        let encoding = self.processor.encode_text(text, false)?;
+        let encoding = self.processor.encode_text(text, true)?;
         let input_ids_vec: Vec<f32> = encoding.get_ids().iter().map(|&x| x as f32).collect();
         let input_ids = Array::from_shape_vec((1, input_ids_vec.len()), input_ids_vec)?.into_dyn();
 
@@ -110,12 +110,13 @@ impl Chatterbox {
         let speaker_features = encoder_outputs["speaker_features"].clone();
 
         // Diagnostic: check prompt tokens
-        let pt_slice = prompt_token.slice(s![0, ..]);
-        let pt_min = pt_slice.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-        let pt_max = pt_slice.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let pt_min = prompt_token.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let pt_max = prompt_token
+            .iter()
+            .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
         tracing::info!(
-            "Prompt tokens: len={}, range=[{}, {}]",
-            pt_slice.len(),
+            "Prompt tokens: shape={:?}, range=[{}, {}]",
+            prompt_token.shape(),
             pt_min,
             pt_max
         );
@@ -147,6 +148,7 @@ impl Chatterbox {
 
         let mut past_key_values: HashMap<String, ArrayD<f32>> = HashMap::new();
         for name in &kv_names {
+            // [batch_size, num_kv_heads, 0, head_dim]
             let shape = vec![batch_size, self.num_kv_heads, 0, self.head_dim];
             past_key_values.insert(name.clone(), Array::zeros(shape).into_dyn());
         }
@@ -190,15 +192,29 @@ impl Chatterbox {
                 }
             }
 
-            let last_logits = logits.slice(s![.., -1, ..]).into_owned().into_dyn();
+            // Slicing to get last token's logits
+            let shape = logits.shape();
+            let last_logits = if shape.len() == 3 {
+                logits.slice(s![0, -1, ..]).into_owned().into_dyn()
+            } else if shape.len() == 2 {
+                logits.slice(s![-1, ..]).into_owned().into_dyn()
+            } else {
+                return Err(anyhow!("Unexpected logits shape: {:?}", shape));
+            };
+
             let mut next_token_logits = last_logits.clone();
             apply_repetition_penalty(&mut next_token_logits, &generate_tokens, repetition_penalty);
 
             let next_token_id = argmax(&next_token_logits);
             generate_tokens.push(next_token_id);
 
-            if i % 50 == 0 || i < 10 {
-                tracing::debug!("Step {}: generated token {}", i, next_token_id);
+            if i % 50 == 0 || i < 5 {
+                tracing::info!(
+                    "Step {}: generated token {}, logits shape={:?}",
+                    i,
+                    next_token_id,
+                    shape
+                );
             }
 
             if next_token_id == STOP_SPEECH_TOKEN {
@@ -213,8 +229,10 @@ impl Chatterbox {
                     .into_dyn();
 
             // 2. position_ids
-            let last_pos = position_ids.slice(s![0, -1]);
-            let last_pos_val = *last_pos.first().ok_or(anyhow!("Position IDs empty"))?;
+            let last_pos_val = *position_ids
+                .iter()
+                .last()
+                .ok_or(anyhow!("Position IDs empty"))?;
             position_ids = Array::from_elem((batch_size, 1), last_pos_val + 1.0).into_dyn();
 
             // 3. input_ids for next token
@@ -227,10 +245,9 @@ impl Chatterbox {
         }
 
         // 6. Decode Audio
-        let mut speech_tokens_vec = generate_tokens;
-        if speech_tokens_vec.first() == Some(&START_SPEECH_TOKEN) {
-            speech_tokens_vec.remove(0);
-        }
+        let len = generate_tokens.len();
+        let speech_tokens = if len > 1 { &generate_tokens[1..] } else { &[] };
+        let mut speech_tokens_vec: Vec<i64> = speech_tokens.to_vec();
         if speech_tokens_vec.last() == Some(&STOP_SPEECH_TOKEN) {
             speech_tokens_vec.pop();
         }
@@ -240,26 +257,23 @@ impl Chatterbox {
             speech_tokens_vec.push(SILENCE_TOKEN);
         }
 
-        let gen_tokens_arr = Array::from_shape_vec(
-            (1, speech_tokens_vec.len()),
-            speech_tokens_vec.iter().map(|&x| x as f32).collect(),
-        )?
-        .into_dyn();
+        let mut final_tokens: Vec<f32> = prompt_token.iter().map(|&x| x as f32).collect();
+        final_tokens.extend(speech_tokens_vec.iter().map(|&x| x as f32));
+
+        let gen_tokens_arr =
+            Array::from_shape_vec((1, final_tokens.len()), final_tokens)?.into_dyn();
 
         // Diagnostic: check generated tokens
-        let gt_slice = gen_tokens_arr.slice(s![0, ..]);
-        let gt_min = gt_slice.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-        let gt_max = gt_slice.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let gt_min = speech_tokens_vec.iter().fold(i64::MAX, |a, &b| a.min(b));
+        let gt_max = speech_tokens_vec.iter().fold(i64::MIN, |a, &b| a.max(b));
         tracing::info!(
             "Generated tokens: len={}, range=[{}, {}]",
-            gt_slice.len(),
+            speech_tokens_vec.len(),
             gt_min,
             gt_max
         );
 
-        let full_speech_tokens =
-            ndarray::concatenate(Axis(1), &[prompt_token.view(), gen_tokens_arr.view()])?
-                .into_dyn();
+        let full_speech_tokens = gen_tokens_arr;
 
         let dec_inames: Vec<String> = self
             .conditional_decoder
@@ -287,7 +301,7 @@ impl Chatterbox {
 }
 
 fn apply_repetition_penalty(logits: &mut ArrayD<f32>, input_ids: &[i64], penalty: f32) {
-    let mut row = logits.slice_mut(s![0, ..]);
+    let mut row = logits.view_mut();
     for &id in input_ids {
         if id >= 0 && (id as usize) < row.len() {
             let score = row[id as usize];
@@ -301,11 +315,10 @@ fn apply_repetition_penalty(logits: &mut ArrayD<f32>, input_ids: &[i64], penalty
 }
 
 fn argmax(logits: &ArrayD<f32>) -> i64 {
-    let row = logits.slice(s![0, ..]);
     let mut max_val = f32::NEG_INFINITY;
     let mut max_idx = 0;
 
-    for (i, &val) in row.iter().enumerate() {
+    for (i, &val) in logits.iter().enumerate() {
         if val > max_val {
             max_val = val;
             max_idx = i;
