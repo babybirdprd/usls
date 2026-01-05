@@ -82,6 +82,10 @@ struct Args {
     /// decoder batch max
     #[argh(option, default = "8")]
     decoder_batch_max: usize,
+
+    /// use sequential mode
+    #[argh(switch)]
+    pub sequential: bool,
 }
 
 fn main() -> Result<()> {
@@ -131,6 +135,7 @@ fn main() -> Result<()> {
     .with_dtype_all(args.dtype.parse()?)
     .with_class_confs(&[args.conf])
     .with_device_all(args.device.parse()?)
+    .with_sequential(args.sequential)
     .commit()?;
     let mut model = SAM3::new(config)?;
 
