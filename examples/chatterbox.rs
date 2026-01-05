@@ -27,14 +27,6 @@ struct Args {
     /// use hybrid execution mode (offload large models to CPU) to avoid OOM
     #[argh(switch)]
     hybrid: bool,
-
-    /// run models sequentially and unload them after use to save VRAM
-    #[argh(switch)]
-    sequential: bool,
-
-    /// model precision (e.g., "fp32", "fp16")
-    #[argh(option, default = "String::from(\"auto\")")]
-    dtype: String,
 }
 
 fn main() -> Result<()> {
@@ -60,12 +52,7 @@ fn main() -> Result<()> {
 
     // Initialize model
     let device = args.device.parse::<usls::Device>()?;
-    let dtype = args.dtype.parse::<usls::DType>()?;
-    let mut config = Config::chatterbox_turbo()
-        .with_device_all(device)
-        .with_dtype_all(dtype)
-        .with_sequential(args.sequential);
-
+    let mut config = Config::chatterbox_turbo().with_device_all(device);
     if args.hybrid {
         // Offload the largest model (language_model) and the decoder to CPU
         config.textual_decoder.device = usls::Device::Cpu(0);
@@ -74,9 +61,6 @@ fn main() -> Result<()> {
             "Using Hybrid mode: Language Model and Decoder on CPU, others on {:?}.",
             device
         );
-    }
-    if args.sequential {
-        println!("Using Sequential mode: models will be loaded/unloaded one by one.");
     }
     let mut model = Chatterbox::new(config.commit()?)?;
 

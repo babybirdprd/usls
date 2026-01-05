@@ -69,7 +69,6 @@ pub struct Config {
     pub sam_low_res_mask: Option<bool>,
     pub max_tokens: Option<usize>,
     pub token_level_class: bool,
-    pub sequential: bool,
 }
 
 impl Default for Config {
@@ -104,7 +103,6 @@ impl Default for Config {
             sam_low_res_mask: None,
             topk: None,
             token_level_class: false,
-            sequential: false,
             model: Default::default(),
             encoder: Default::default(),
             decoder: Default::default(),
