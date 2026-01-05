@@ -96,26 +96,36 @@ impl Chatterbox {
 
         // 2. Tokenize Text
         let encoding = self.processor.encode_text(text, false)?;
-        let input_ids_vec: Vec<f32> = encoding.get_ids().iter().map(|&x| x as f32).collect(); // f32 for Engine
+        let input_ids_vec: Vec<f32> = encoding.get_ids().iter().map(|&x| x as f32).collect();
         let input_ids = Array::from_shape_vec((1, input_ids_vec.len()), input_ids_vec)?.into_dyn();
 
         // 3. Run Speech Encoder
         let encoder_outputs = self
             .speech_encoder
             .run(Xs::from(vec![X::from(audio_values)]))?;
-        let cond_emb = &encoder_outputs[0];
-        let prompt_token = &encoder_outputs[1];
-        let speaker_embeddings = &encoder_outputs[2];
-        let speaker_features = &encoder_outputs[3];
+
+        let cond_emb = encoder_outputs["audio_features"].0.clone();
+        let prompt_token = encoder_outputs["audio_tokens"].0.clone();
+        let speaker_embeddings = encoder_outputs["speaker_embeddings"].clone();
+        let speaker_features = encoder_outputs["speaker_features"].clone();
+
+        // Diagnostic: check prompt tokens
+        let pt_slice = prompt_token.slice(s![0, ..]);
+        let pt_min = pt_slice.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let pt_max = pt_slice.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        tracing::info!(
+            "Prompt tokens: len={}, range=[{}, {}]",
+            pt_slice.len(),
+            pt_min,
+            pt_max
+        );
 
         // 4. Run Embed Tokens
-        let embed_outputs = self
-            .embed_tokens
-            .run(Xs::from(vec![X::from(input_ids.clone())]))?;
-        let text_embeds = &embed_outputs[0];
+        let embed_outputs = self.embed_tokens.run(Xs::from(vec![X::from(input_ids)]))?;
+        let text_embeds = &embed_outputs["inputs_embeds"];
 
         // Concatenate cond_emb and text_embeds
-        let inputs_embeds =
+        let mut current_inputs_embeds =
             ndarray::concatenate(Axis(1), &[cond_emb.view(), text_embeds.view()])?.into_dyn();
 
         // 5. Generation Loop
@@ -123,7 +133,6 @@ impl Chatterbox {
         let mut generate_tokens = vec![START_SPEECH_TOKEN];
 
         // Initialize KV cache
-        // Clone names to avoid borrowing self
         let inames: Vec<String> = self
             .language_model
             .inames()
@@ -138,25 +147,21 @@ impl Chatterbox {
 
         let mut past_key_values: HashMap<String, ArrayD<f32>> = HashMap::new();
         for name in &kv_names {
-            // Shape: [batch, NUM_KV_HEADS, 0, HEAD_DIM]
             let shape = vec![batch_size, self.num_kv_heads, 0, self.head_dim];
             past_key_values.insert(name.clone(), Array::zeros(shape).into_dyn());
         }
 
-        let mut attention_mask: Array<f32, IxDyn> =
-            Array::ones((batch_size, inputs_embeds.shape()[1])).into_dyn();
-        // position_ids: f32 for X/Engine
-        let mut position_ids: Array<f32, IxDyn> = Array::from_shape_vec(
-            (batch_size, inputs_embeds.shape()[1]),
-            (0..inputs_embeds.shape()[1] as i64)
+        let mut attention_mask =
+            Array::from_elem((batch_size, current_inputs_embeds.shape()[1]), 1.0f32).into_dyn();
+        let mut position_ids = Array::from_shape_vec(
+            (batch_size, current_inputs_embeds.shape()[1]),
+            (0..current_inputs_embeds.shape()[1] as i64)
                 .map(|x| x as f32)
                 .collect(),
         )?
         .into_dyn();
 
-        let mut current_inputs_embeds = inputs_embeds.clone();
-
-        for _ in 0..max_new_tokens {
+        for i in 0..max_new_tokens {
             // Prepare inputs for LM
             // Order must match `inames`
             let mut lm_inputs = Vec::new();
@@ -175,60 +180,26 @@ impl Chatterbox {
             }
 
             let lm_outputs = self.language_model.run(Xs::from(lm_inputs))?;
-
-            // Get output names
-            let onames = self
-                .language_model
-                .onames()
-                .ok_or(anyhow!("Model outputs not available"))?;
-            let logits = &lm_outputs[0];
-
-            // Debug: log shapes and vocab size
-            tracing::debug!(
-                "LM output logits shape: {:?}, vocab_size: {}",
-                logits.shape(),
-                logits.shape().last().unwrap_or(&0)
-            );
+            let logits = &lm_outputs["logits"];
 
             // Update KV cache
-            let mut kv_outputs = Vec::new();
-            for (i, _name) in onames.iter().enumerate() {
-                if i == 0 {
-                    continue;
-                } // Logits
-                kv_outputs.push(lm_outputs[i].clone());
+            for name in &kv_names {
+                let output_name = name.replace("past_key_values", "present");
+                if let Some(kv_out) = lm_outputs.get(&output_name) {
+                    past_key_values.insert(name.clone(), kv_out.0.clone());
+                }
             }
 
-            if kv_outputs.len() != kv_names.len() {
-                return Err(anyhow!(
-                    "KV cache mismatch: inputs {} vs outputs {}",
-                    kv_names.len(),
-                    kv_outputs.len()
-                ));
-            }
-
-            for (i, name) in kv_names.iter().enumerate() {
-                past_key_values.insert(name.clone(), kv_outputs[i].0.clone());
-            }
-
-            // Logits processing
             let last_logits = logits.slice(s![.., -1, ..]).into_owned().into_dyn();
-
-            // Apply Repetition Penalty
             let mut next_token_logits = last_logits.clone();
             apply_repetition_penalty(&mut next_token_logits, &generate_tokens, repetition_penalty);
 
-            // Greedy decoding
             let next_token_id = argmax(&next_token_logits);
-
-            // Debug: log generated token
-            tracing::debug!(
-                "Generated token: {}, total tokens: {}",
-                next_token_id,
-                generate_tokens.len()
-            );
-
             generate_tokens.push(next_token_id);
+
+            if i % 50 == 0 || i < 10 {
+                tracing::debug!("Step {}: generated token {}", i, next_token_id);
+            }
 
             if next_token_id == STOP_SPEECH_TOKEN {
                 break;
@@ -236,24 +207,23 @@ impl Chatterbox {
 
             // Update for next iteration
             // 1. attention_mask
-            let new_mask_part: Array<f32, IxDyn> = Array::ones((batch_size, 1)).into_dyn();
+            let new_mask_part = Array::ones((batch_size, 1)).into_dyn();
             attention_mask =
                 ndarray::concatenate(Axis(1), &[attention_mask.view(), new_mask_part.view()])?
                     .into_dyn();
 
             // 2. position_ids
-            let last_pos = position_ids
-                .slice(s![.., -1])
-                .mapv(|x| x + 1.0)
-                .insert_axis(Axis(1));
-            position_ids = last_pos.into_dyn();
+            let last_pos = position_ids.slice(s![0, -1]);
+            let last_pos_val = *last_pos.first().ok_or(anyhow!("Position IDs empty"))?;
+            position_ids = Array::from_elem((batch_size, 1), last_pos_val + 1.0).into_dyn();
 
             // 3. input_ids for next token
-            let next_input_ids = Array::from_elem((batch_size, 1), next_token_id as f32).into_dyn();
+            let next_token_tensor =
+                Array::from_elem((batch_size, 1), next_token_id as f32).into_dyn();
             let embed_out_next = self
                 .embed_tokens
-                .run(Xs::from(vec![X::from(next_input_ids)]))?;
-            current_inputs_embeds = embed_out_next[0].0.clone();
+                .run(Xs::from(vec![X::from(next_token_tensor)]))?;
+            current_inputs_embeds = embed_out_next["inputs_embeds"].0.clone();
         }
 
         // 6. Decode Audio
@@ -270,14 +240,25 @@ impl Chatterbox {
             speech_tokens_vec.push(SILENCE_TOKEN);
         }
 
-        let generated_tokens_arr = Array::from_shape_vec(
+        let gen_tokens_arr = Array::from_shape_vec(
             (1, speech_tokens_vec.len()),
             speech_tokens_vec.iter().map(|&x| x as f32).collect(),
         )?
         .into_dyn();
 
+        // Diagnostic: check generated tokens
+        let gt_slice = gen_tokens_arr.slice(s![0, ..]);
+        let gt_min = gt_slice.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let gt_max = gt_slice.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        tracing::info!(
+            "Generated tokens: len={}, range=[{}, {}]",
+            gt_slice.len(),
+            gt_min,
+            gt_max
+        );
+
         let full_speech_tokens =
-            ndarray::concatenate(Axis(1), &[prompt_token.view(), generated_tokens_arr.view()])?
+            ndarray::concatenate(Axis(1), &[prompt_token.view(), gen_tokens_arr.view()])?
                 .into_dyn();
 
         let dec_inames: Vec<String> = self
@@ -300,18 +281,13 @@ impl Chatterbox {
         }
 
         let wav_output = self.conditional_decoder.run(Xs::from(ordered_inputs))?;
-        let wav = &wav_output[0];
-
-        let wav_vec = wav.iter().cloned().collect();
-
-        Ok(wav_vec)
+        let wav = &wav_output["waveform"]; // The probe said the output name is "waveform"
+        Ok(wav.iter().cloned().collect())
     }
 }
 
 fn apply_repetition_penalty(logits: &mut ArrayD<f32>, input_ids: &[i64], penalty: f32) {
-    let mut logits_view = logits.view_mut();
-    let mut row = logits_view.slice_mut(s![0, ..]);
-
+    let mut row = logits.slice_mut(s![0, ..]);
     for &id in input_ids {
         if id >= 0 && (id as usize) < row.len() {
             let score = row[id as usize];
