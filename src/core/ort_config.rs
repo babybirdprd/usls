@@ -81,19 +81,23 @@ impl ORTConfig {
                     let stem = try_fetch_file_stem(&self.file)?;
                     self.spec = format!("{}/{}", name, stem);
 
-                    let parts: Vec<&str> = self.file.split('/').filter(|x| !x.is_empty()).collect();
-                    if parts.len() > 1 {
-                        self.file = Hub::default().try_fetch(&self.file)?;
+                    let remote_file = if self.file.split('/').filter(|x| !x.is_empty()).count() > 1
+                    {
+                        self.file.clone()
                     } else {
-                        self.file = Hub::default().try_fetch(&format!("{}/{}", name, self.file))?;
-                    }
+                        format!("{}/{}", name, self.file)
+                    };
+                    self.file = Hub::default().try_fetch(&remote_file)?;
 
                     // try fetch external data file if it exists
                     if self.external_data_file {
-                        let external_data_file = format!("{}_data", self.file);
-                        tracing::info!("Trying to fetch external data file {}", external_data_file);
+                        let remote_external_data_file = format!("{}_data", remote_file);
+                        tracing::info!(
+                            "Trying to fetch external data file {}",
+                            remote_external_data_file
+                        );
 
-                        match Hub::default().try_fetch(&external_data_file) {
+                        match Hub::default().try_fetch(&remote_external_data_file) {
                             Ok(external_data_file) => {
                                 tracing::info!(
                                     "Successfully fetched external data file: {}",
@@ -103,7 +107,7 @@ impl ORTConfig {
                             Err(_) => {
                                 tracing::warn!(
                                     "No external data file found for model {}",
-                                    self.file
+                                    remote_external_data_file
                                 );
                             }
                         }

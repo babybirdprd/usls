@@ -151,6 +151,73 @@ impl Hub {
         anyhow::bail!("HF hub support is not enabled. Please enable the 'hf-hub' feature.")
     }
 
+    /// Fallback download function for HF files when hf-hub fails with Content-Range error.
+    /// This happens because the HF CDN returns HTTP 200 instead of 206 for non-LFS files.
+    #[cfg(feature = "hf-hub")]
+    fn hf_fallback_download(&self, owner: &str, repo: &str, file: &str) -> Result<String> {
+        use std::io::{Read, Write};
+
+        let url = format!(
+            "{}/{}/{}/resolve/main/{}",
+            self.hf_endpoint, owner, repo, file
+        );
+        tracing::warn!(
+            "hf-hub download failed with Content-Range error, falling back to direct download: {}",
+            url
+        );
+
+        // Create cache directory following HF cache structure
+        let cache_dir = self
+            .to
+            .crate_dir_default()?
+            .join("huggingface")
+            .join("hub")
+            .join(format!(
+                "models--{}--{}",
+                owner.replace('/', "--"),
+                repo.replace('/', "--")
+            ))
+            .join("snapshots")
+            .join("fallback");
+
+        std::fs::create_dir_all(&cache_dir)?;
+        let dest_path = cache_dir.join(file);
+
+        // Create parent directories for nested file paths (e.g., "onnx/file.onnx")
+        if let Some(parent) = dest_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Download using ureq (already a dependency of hf-hub)
+        let response = ureq::get(&url)
+            .call()
+            .map_err(|e| anyhow::anyhow!("Failed to download {}: {}", url, e))?;
+
+        let body = response.into_body();
+        let mut file_handle = std::fs::File::create(&dest_path)
+            .with_context(|| format!("Failed to create file: {}", dest_path.display()))?;
+
+        // Read the body directly into file
+        let mut buf = Vec::new();
+        body.into_reader()
+            .read_to_end(&mut buf)
+            .with_context(|| format!("Failed to read response body for: {}", url))?;
+        file_handle
+            .write_all(&buf)
+            .with_context(|| format!("Failed to write to file: {}", dest_path.display()))?;
+
+        tracing::info!(
+            "Successfully downloaded via fallback: {}",
+            dest_path.display()
+        );
+        Ok(dest_path.to_str().unwrap().to_string())
+    }
+
+    #[cfg(not(feature = "hf-hub"))]
+    fn hf_fallback_download(&self, _owner: &str, _repo: &str, _file: &str) -> Result<String> {
+        anyhow::bail!("HF hub support is not enabled. Please enable the 'hf-hub' feature.")
+    }
+
     #[cfg(not(feature = "github"))]
     pub fn try_fetch(&mut self, s: &str) -> Result<String> {
         unimplemented!(
@@ -252,8 +319,14 @@ impl Hub {
                 #[cfg(feature = "hf-hub")]
                 {
                     if let Some(hf_repo) = &self.hf_repo {
-                        return Ok(hf_repo.get(s)?.to_str().unwrap().to_string());
-                        // from hf repo
+                        match hf_repo.get(s) {
+                            Ok(path) => return Ok(path.to_str().unwrap().to_string()),
+                            Err(e) if e.to_string().contains("Content-Range is missing") => {
+                                // Fallback to direct download for non-LFS files
+                                return self.hf_fallback_download(&self.owner, &self.repo, s);
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
                     }
                     let parts: Vec<&str> = s.split('/').filter(|x| !x.is_empty()).collect();
                     if parts.len() > 2 {
@@ -268,11 +341,15 @@ impl Hub {
                             .with_retries(self.max_attempts as usize)
                             .build()?;
                         let hf_repo = hf_api.model(format!("{}/{}", parts[0], parts[1]));
-                        return Ok(hf_repo
-                            .get(&parts[2..].join("/"))?
-                            .to_str()
-                            .unwrap()
-                            .to_string());
+                        let file_path = parts[2..].join("/");
+                        match hf_repo.get(&file_path) {
+                            Ok(path) => return Ok(path.to_str().unwrap().to_string()),
+                            Err(e) if e.to_string().contains("Content-Range is missing") => {
+                                // Fallback to direct download for non-LFS files
+                                return self.hf_fallback_download(parts[0], parts[1], &file_path);
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
                     }
                 }
                 #[cfg(not(feature = "hf-hub"))]

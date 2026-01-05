@@ -6,7 +6,10 @@ use usls::{Chatterbox, Config};
 /// Chatterbox Text-to-Speech example
 struct Args {
     /// input text to speak
-    #[argh(option, default = "String::from(\"Hello! This is a test of Chatterbox Turbo. [laugh]\")")]
+    #[argh(
+        option,
+        default = "String::from(\"Hello! This is a test of Chatterbox Turbo. [laugh]\")"
+    )]
     text: String,
 
     /// input audio prompt (wav file, preferably 24kHz)
@@ -40,7 +43,7 @@ fn main() -> Result<()> {
     }
 
     // Initialize model
-    let mut model = Chatterbox::new(Config::chatterbox_turbo())?;
+    let mut model = Chatterbox::new(Config::chatterbox_turbo().commit()?)?;
 
     // Run inference
     println!("Generating audio for: \"{}\"", args.text);
