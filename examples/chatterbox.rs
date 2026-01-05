@@ -19,6 +19,14 @@ struct Args {
     /// output audio file
     #[argh(option, default = "String::from(\"output.wav\")")]
     output: String,
+
+    /// device to use (e.g., "cpu", "cuda:0", "directml:0")
+    #[argh(option, default = "String::from(\"cpu\")")]
+    device: String,
+
+    /// use hybrid execution mode (offload large models to CPU) to avoid OOM
+    #[argh(switch)]
+    hybrid: bool,
 }
 
 fn main() -> Result<()> {
@@ -43,7 +51,18 @@ fn main() -> Result<()> {
     }
 
     // Initialize model
-    let mut model = Chatterbox::new(Config::chatterbox_turbo().commit()?)?;
+    let device = args.device.parse::<usls::Device>()?;
+    let mut config = Config::chatterbox_turbo().with_device_all(device);
+    if args.hybrid {
+        // Offload the largest model (language_model) and the decoder to CPU
+        config.textual_decoder.device = usls::Device::Cpu(0);
+        config.decoder.device = usls::Device::Cpu(0);
+        println!(
+            "Using Hybrid mode: Language Model and Decoder on CPU, others on {:?}.",
+            device
+        );
+    }
+    let mut model = Chatterbox::new(config.commit()?)?;
 
     // Run inference
     println!("Generating audio for: \"{}\"", args.text);

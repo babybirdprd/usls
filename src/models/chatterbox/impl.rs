@@ -1,11 +1,10 @@
 use aksr::Builder;
 use anyhow::{anyhow, Result};
-use ndarray::{s, Array, ArrayD, Axis, IxDyn};
+use ndarray::{s, Array, ArrayD, Axis};
 use std::collections::HashMap;
 
 use crate::{Config, Engine, Processor, Xs, X};
 
-const SAMPLE_RATE: u32 = 24000;
 const START_SPEECH_TOKEN: i64 = 6561;
 const STOP_SPEECH_TOKEN: i64 = 6562;
 const SILENCE_TOKEN: i64 = 4299;
