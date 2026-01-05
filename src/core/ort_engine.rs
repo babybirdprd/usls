@@ -127,6 +127,10 @@ impl OrtEngine {
                 fp16: config.hardware.migraphx.fp16,
                 exhaustive_tune: config.hardware.migraphx.exhaustive_tune,
             },
+            cuda: crate::CudaConfig {
+                conv_algo_search: config.hardware.cuda.conv_algo_search,
+                fp16: config.hardware.cuda.fp16,
+            },
         };
 
         Self {
@@ -220,7 +224,9 @@ impl OrtEngine {
         });
         if !self.sequential {
             self.load()?;
-            self.dry_run()?;
+        } else {
+            // In sequential mode, unload the session after build to save memory
+            self.unload()?;
         }
         self.info();
 
@@ -245,6 +251,11 @@ impl OrtEngine {
         if let Some(onnx) = &mut self.onnx {
             onnx.session = Some(session);
         }
+
+        // Warm up the session to initialize cuDNN state
+        // This is critical for sequential mode where sessions are created on-demand
+        self.dry_run()?;
+
         Ok(())
     }
 
@@ -725,8 +736,17 @@ impl OrtEngine {
 
                 #[cfg(feature = "cuda")]
                 {
+                    let algo_search = match self.hardware.cuda.conv_algo_search {
+                        0 => ort::execution_providers::cuda::CuDNNConvAlgorithmSearch::Exhaustive,
+                        1 => ort::execution_providers::cuda::CuDNNConvAlgorithmSearch::Heuristic,
+                        2 => ort::execution_providers::cuda::CuDNNConvAlgorithmSearch::Default,
+                        _ => ort::execution_providers::cuda::CuDNNConvAlgorithmSearch::Default,
+                    };
+
                     let ep = ort::execution_providers::CUDAExecutionProvider::default()
-                        .with_device_id(_id as i32);
+                        .with_device_id(_id as i32)
+                        .with_conv_algorithm_search(algo_search);
+
                     match ep.is_available() {
                         Ok(true) => {
                             ep.register(&mut builder).map_err(|err| {

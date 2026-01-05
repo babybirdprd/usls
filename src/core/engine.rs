@@ -170,6 +170,10 @@ impl Engine {
                 fp16: config.hardware.migraphx.fp16,
                 exhaustive_tune: config.hardware.migraphx.exhaustive_tune,
             },
+            cuda: crate::CudaConfig {
+                conv_algo_search: config.hardware.cuda.conv_algo_search,
+                fp16: config.hardware.cuda.fp16,
+            },
         };
 
         Self {
@@ -260,10 +264,9 @@ impl Engine {
             });
         });
 
-        // if not in sequential mode, we can load it immediately
+        // Initial load and warmup if not in sequential mode
         if !self.sequential {
             self.load()?;
-            self.dry_run()?;
         }
         self.info();
 
@@ -288,6 +291,11 @@ impl Engine {
         if let Some(onnx) = &mut self.onnx {
             onnx.session = Some(session);
         }
+
+        // Warm up the session to initialize cuDNN state
+        // This is critical for sequential mode where sessions are created on-demand
+        self.dry_run()?;
+
         Ok(())
     }
 
@@ -590,8 +598,17 @@ impl Engine {
 
                 #[cfg(feature = "cuda")]
                 {
+                    let algo_search = match self.hardware.cuda.conv_algo_search {
+                        0 => ort::execution_providers::cuda::CuDNNConvAlgorithmSearch::Exhaustive,
+                        1 => ort::execution_providers::cuda::CuDNNConvAlgorithmSearch::Heuristic,
+                        2 => ort::execution_providers::cuda::CuDNNConvAlgorithmSearch::Default,
+                        _ => ort::execution_providers::cuda::CuDNNConvAlgorithmSearch::Default,
+                    };
+
                     let ep = ort::execution_providers::CUDAExecutionProvider::default()
-                        .with_device_id(id as i32);
+                        .with_device_id(id as i32)
+                        .with_conv_algorithm_search(algo_search);
+
                     match ep.is_available() {
                         Ok(true) => {
                             ep.register(&mut builder).map_err(|err| {

@@ -12,6 +12,27 @@ pub struct CpuConfig {
     pub arena_allocator: bool,
 }
 
+/// NVIDIA CUDA execution provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CudaConfig {
+    /// Convolution algorithm search configuration.
+    /// 0: Exhaustive
+    /// 1: Heuristic
+    /// 2: Default
+    pub conv_algo_search: usize,
+    /// Force FP16 precision.
+    pub fp16: bool,
+}
+
+impl Default for CudaConfig {
+    fn default() -> Self {
+        Self {
+            conv_algo_search: 2, // Default
+            fp16: true,
+        }
+    }
+}
+
 /// NVIDIA TensorRT execution provider configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TensorRtConfig {
@@ -113,6 +134,8 @@ pub struct HardwareConfig {
     pub armnn: ArmNnConfig,
     /// MIGraphX execution provider configuration.
     pub migraphx: MiGraphXConfig,
+    /// CUDA execution provider configuration.
+    pub cuda: CudaConfig,
 }
 
 impl HardwareConfig {
@@ -158,6 +181,7 @@ impl HardwareConfig {
                 fp16: true,
                 exhaustive_tune: false,
             },
+            cuda: CudaConfig::default(),
         }
     }
 
