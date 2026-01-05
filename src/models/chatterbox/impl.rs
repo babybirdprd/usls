@@ -20,16 +20,17 @@ pub enum ChatterboxKind {
     Turbo,
 }
 
-#[derive(Debug, Builder)]
 pub struct Chatterbox {
+    /// Configuration.
+    pub config: Config,
     /// Speech encoder for audio prompts.
-    pub speech_encoder: Engine,
+    pub speech_encoder: Option<Engine>,
     /// Token embeddings model.
-    pub embed_tokens: Engine,
+    pub embed_tokens: Option<Engine>,
     /// Language model (causal).
-    pub language_model: Engine,
+    pub language_model: Option<Engine>,
     /// Conditional decoder for audio generation.
-    pub conditional_decoder: Engine,
+    pub conditional_decoder: Option<Engine>,
     /// Processor for tokenization.
     pub processor: Processor,
     /// Kind of model.
@@ -42,11 +43,19 @@ pub struct Chatterbox {
 
 impl Chatterbox {
     pub fn new(config: Config) -> Result<Self> {
-        let speech_encoder = Engine::try_from_config(&config.encoder)?;
-        let embed_tokens = Engine::try_from_config(&config.textual_encoder)?;
-        let language_model = Engine::try_from_config(&config.textual_decoder)?;
-        let conditional_decoder = Engine::try_from_config(&config.decoder)?;
         let processor = Processor::try_from_config(&config.processor)?;
+
+        let (speech_encoder, embed_tokens, language_model, conditional_decoder) =
+            if config.sequential {
+                (None, None, None, None)
+            } else {
+                (
+                    Some(Engine::try_from_config(&config.encoder)?),
+                    Some(Engine::try_from_config(&config.textual_encoder)?),
+                    Some(Engine::try_from_config(&config.textual_decoder)?),
+                    Some(Engine::try_from_config(&config.decoder)?),
+                )
+            };
 
         let kind = match config.name {
             "chatterbox-turbo" => ChatterboxKind::Turbo,
@@ -54,11 +63,11 @@ impl Chatterbox {
             _ => ChatterboxKind::Base,
         };
 
-        // Use reused fields or defaults
         let num_kv_heads = config.num_classes.unwrap_or(16);
         let head_dim = config.num_keypoints.unwrap_or(64);
 
         Ok(Self {
+            config,
             speech_encoder,
             embed_tokens,
             language_model,
@@ -68,6 +77,42 @@ impl Chatterbox {
             num_kv_heads,
             head_dim,
         })
+    }
+
+    fn get_speech_encoder(&mut self) -> Result<&mut Engine> {
+        if self.speech_encoder.is_none() {
+            self.speech_encoder = Some(Engine::try_from_config(&self.config.encoder)?);
+        }
+        Ok(self.speech_encoder.as_mut().unwrap())
+    }
+
+    fn get_embed_tokens(&mut self) -> Result<&mut Engine> {
+        if self.embed_tokens.is_none() {
+            let config = if self.config.sequential {
+                // If sequential, always put embed_tokens on CPU as it's small and used in the loop
+                let mut c = self.config.textual_encoder.clone();
+                c.device = crate::Device::Cpu(0);
+                c
+            } else {
+                self.config.textual_encoder.clone()
+            };
+            self.embed_tokens = Some(Engine::try_from_config(&config)?);
+        }
+        Ok(self.embed_tokens.as_mut().unwrap())
+    }
+
+    fn get_language_model(&mut self) -> Result<&mut Engine> {
+        if self.language_model.is_none() {
+            self.language_model = Some(Engine::try_from_config(&self.config.textual_decoder)?);
+        }
+        Ok(self.language_model.as_mut().unwrap())
+    }
+
+    fn get_conditional_decoder(&mut self) -> Result<&mut Engine> {
+        if self.conditional_decoder.is_none() {
+            self.conditional_decoder = Some(Engine::try_from_config(&self.config.decoder)?);
+        }
+        Ok(self.conditional_decoder.as_mut().unwrap())
     }
 
     /// Run inference to generate audio from text and a voice prompt.
@@ -100,7 +145,7 @@ impl Chatterbox {
 
         // 3. Run Speech Encoder
         let encoder_outputs = self
-            .speech_encoder
+            .get_speech_encoder()?
             .run(Xs::from(vec![X::from(audio_values)]))?;
 
         let cond_emb = encoder_outputs["audio_features"].0.clone();
@@ -108,20 +153,15 @@ impl Chatterbox {
         let speaker_embeddings = encoder_outputs["speaker_embeddings"].clone();
         let speaker_features = encoder_outputs["speaker_features"].clone();
 
-        // Diagnostic: check prompt tokens
-        let pt_min = prompt_token.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-        let pt_max = prompt_token
-            .iter()
-            .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-        tracing::info!(
-            "Prompt tokens: shape={:?}, range=[{}, {}]",
-            prompt_token.shape(),
-            pt_min,
-            pt_max
-        );
+        if self.config.sequential {
+            self.speech_encoder = None;
+            tracing::info!("Unloaded Speech Encoder");
+        }
 
         // 4. Run Embed Tokens
-        let embed_outputs = self.embed_tokens.run(Xs::from(vec![X::from(input_ids)]))?;
+        let embed_outputs = self
+            .get_embed_tokens()?
+            .run(Xs::from(vec![X::from(input_ids)]))?;
         let text_embeds = &embed_outputs["inputs_embeds"];
 
         // Concatenate cond_emb and text_embeds
@@ -134,7 +174,7 @@ impl Chatterbox {
 
         // Initialize KV cache
         let inames: Vec<String> = self
-            .language_model
+            .get_language_model()?
             .inames()
             .ok_or(anyhow!("Model inputs not available"))?
             .to_vec();
@@ -180,7 +220,7 @@ impl Chatterbox {
                 }
             }
 
-            let lm_outputs = self.language_model.run(Xs::from(lm_inputs))?;
+            let lm_outputs = self.get_language_model()?.run(Xs::from(lm_inputs))?;
             let logits = &lm_outputs["logits"];
 
             // Update KV cache
@@ -238,9 +278,15 @@ impl Chatterbox {
             let next_token_tensor =
                 Array::from_elem((batch_size, 1), next_token_id as f32).into_dyn();
             let embed_out_next = self
-                .embed_tokens
+                .get_embed_tokens()?
                 .run(Xs::from(vec![X::from(next_token_tensor)]))?;
             current_inputs_embeds = embed_out_next["inputs_embeds"].0.clone();
+        }
+
+        if self.config.sequential {
+            self.language_model = None;
+            self.embed_tokens = None;
+            tracing::info!("Unloaded Language Model and Embed Tokens");
         }
 
         // 6. Decode Audio
@@ -275,7 +321,7 @@ impl Chatterbox {
         let full_speech_tokens = gen_tokens_arr;
 
         let dec_inames: Vec<String> = self
-            .conditional_decoder
+            .get_conditional_decoder()?
             .inames()
             .ok_or(anyhow!("Decoder inames missing"))?
             .to_vec();
@@ -293,8 +339,16 @@ impl Chatterbox {
             }
         }
 
-        let wav_output = self.conditional_decoder.run(Xs::from(ordered_inputs))?;
-        let wav = &wav_output["waveform"]; // The probe said the output name is "waveform"
+        let wav_output = self
+            .get_conditional_decoder()?
+            .run(Xs::from(ordered_inputs))?;
+        let wav = &wav_output["waveform"];
+
+        if self.config.sequential {
+            self.conditional_decoder = None;
+            tracing::info!("Unloaded Conditional Decoder");
+        }
+
         Ok(wav.iter().cloned().collect())
     }
 }

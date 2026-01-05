@@ -2,33 +2,37 @@ use crate::{Config, ORTConfig, ProcessorConfig};
 
 impl Config {
     pub fn chatterbox_turbo() -> Self {
+        // Use a helper to build the path with the correct separator for the ResembleAI hub
+        fn turbo_file(name: &str) -> String {
+            format!("ResembleAI/chatterbox-turbo-ONNX/onnx/{}_fp16.onnx", name)
+        }
+
         Self {
             name: "chatterbox-turbo",
             // Speech Encoder
             encoder: ORTConfig {
-                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/speech_encoder_fp16.onnx".to_string(),
+                file: turbo_file("speech_encoder"),
                 external_data_file: true,
                 num_dry_run: 0,
                 ..Default::default()
             },
             // Embed Tokens
             textual_encoder: ORTConfig {
-                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/embed_tokens_fp16.onnx".to_string(),
+                file: turbo_file("embed_tokens"),
                 external_data_file: true,
                 num_dry_run: 0,
                 ..Default::default()
             },
             // Language Model
             textual_decoder: ORTConfig {
-                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/language_model_fp16.onnx".to_string(),
+                file: turbo_file("language_model"),
                 external_data_file: true,
                 num_dry_run: 0,
                 ..Default::default()
             },
             // Conditional Decoder
             decoder: ORTConfig {
-                file: "ResembleAI/chatterbox-turbo-ONNX/onnx/conditional_decoder_fp16.onnx"
-                    .to_string(),
+                file: turbo_file("conditional_decoder"),
                 external_data_file: true,
                 num_dry_run: 0,
                 ..Default::default()
