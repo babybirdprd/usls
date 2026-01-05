@@ -1,0 +1,7 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[env]
+# Force any C/C++ dependencies (via the cc crate) to use the dynamic CRT
+CFLAGS = "/MD"
+CXXFLAGS = "/MD"
