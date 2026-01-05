@@ -172,13 +172,20 @@ usls = { version = "latest-version", features = [ "cuda" ] }
 | [Swin2SR](https://github.com/mv-lab/swin2sr) | Image Super-Resolution and Restoration | `swin2sr` | [demo](examples/swin2sr) |
 | [APISR](https://github.com/Kiteretsu77/APISR) | Real-World Anime Super-Resolution | `apisr` | [demo](examples/apisr) |
 | [RAM & RAM++](https://github.com/xinyu1205/recognize-anything) | Image Tagging | `ram` | [demo](examples/ram) |
-| [Chatterbox](https://github.com/resemble-ai/chatterbox) | Text-to-Speech | `chatterbox` | [demo](examples/chatterbox.rs) |
+| [Chatterbox](https://github.com/resemble-ai/chatterbox) | Text-to-Speech | `chatterbox` | [demo](examples/chatterbox) |
 
 </details>
 
 
-## ❓ FAQ
-See [issues](https://github.com/jamjamjon/usls/issues) or open a new discussion.
+## 🛠️ Troubleshooting
+
+### CUDA & cuDNN Issues
+If you encounter `CUDNN_FE failure 8: HEURISTIC_QUERY_FAILED` or similar errors when using CUDA:
+- **Algorithm Search**: Ensure `conv_algo_search` is set to `2` (Default). This bypasses benchmarking failures in recent cuDNN 9.x versions.
+- **Session Warmup**: Always perform a dry-run inference (warmup) immediately after creating a model. **usls** does this automatically for most models, including in sequential mode.
+
+### Sequential Mode
+Use `--sequential` (or `Config::with_sequential(true)`) to load and unload models on-demand, significantly reducing VRAM usage at the cost of slight latency for each model's first inference (due to warmup).
 
 ## 🤝 Contributing
 

@@ -69,6 +69,18 @@ cargo run -r -F sam3,cuda --example sam3 -- --device cuda --task sam3-tracker \
 
 ```
 
+## Sequential Mode
+
+SAM3 consists of multiple large models (Vision Encoder, Textual/Geometry Encoder, Decoder). To run on GPUs with limited VRAM (e.g., 2GB-4GB), use the `--sequential` flag:
+
+```bash
+cargo run -r -F sam3,cuda --example sam3 -- --device cuda:0 --sequential ...
+```
+
+In sequential mode:
+- Models are loaded and unloaded on-demand.
+- A mandatory **dry-run warmup** is performed upon the first loading of each model to ensure cuDNN stability.
+
 ## Prompt Format
 
 | Format | Description | Example |
